@@ -1,0 +1,35 @@
+name: iOS Unit Tests
+
+on:
+  push:
+    branches:
+      - ci/github-actions
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Challenge2 Unit Tests
+    runs-on: xcode-27
+    timeout-minutes: 20
+
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Run unit tests
+        run: |
+          xcodebuild test \
+            -project Challenge2.xcodeproj \
+            -scheme Challenge2 \
+            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
+            -only-testing:Challenge2Tests \
+            CODE_SIGNING_ALLOWED=NO
