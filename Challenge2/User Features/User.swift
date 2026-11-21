@@ -6,3 +6,10 @@
 //
 
 import Foundation
+
+nonisolated struct User: Equatable {
+    let id: UUID
+    let username: String
+    let token: String
+    let expiresIn: Int
+}

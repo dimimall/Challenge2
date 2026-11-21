@@ -2,8 +2,6 @@ name: iOS Unit Tests
 
 on:
   push:
-    branches:
-      - ci/github-actions
   pull_request:
 
 permissions:

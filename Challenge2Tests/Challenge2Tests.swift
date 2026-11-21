@@ -18,35 +18,43 @@ final class Challenge2Tests: XCTestCase {
 
     func test_login_doesNotRequestLoginWhenPasswordIsEmpty() {
         let (sut, client) = makeSUT()
-
         let credentials = LoginCredentials(
             username: "Dimitra",
             password: ""
         )
 
-        sut.login(loginCredentials: credentials) {
-            _ in
-        }
+        expect(
+            sut,
+            credentials: credentials,
+            toCompleteWith: failure(.invalidCredentials),
+            when: {}
+        )
 
         XCTAssertTrue(client.requests.isEmpty)
     }
 
-    func test_login_forwardsGivenCredentialsToClient() {
-        let url = URL(string: "https://a-given-url.com")!
-        let (sut, client) = makeSUT(url: url)
-
+    func test_login_deliversUserOn200HTTPResponseWithValidJSON() throws {
+        let (sut, client) = makeSUT()
         let credentials = LoginCredentials(
             username: "Dimitra",
             password: "123456"
         )
+        let user = makeUserJson(
+            id: UUID(),
+            credentials: credentials,
+            token: "a-token",
+            expirein: 3600
+        )
+        let data = try JSONSerialization.data(withJSONObject: user.json)
 
-        sut.login(loginCredentials: credentials) {
-            _ in
-        }
-
-        XCTAssertEqual(client.requests,
-                       [HTTPClientSpy.Request(url: url, credentials: credentials)])
-
+        expect(
+            sut,
+            credentials: credentials,
+            toCompleteWith: .success(user.model),
+            when: {
+                client.complete(withStatusCode: 200, data: data)
+            }
+        )
     }
 
     func test_login_doesNotRequestLoginWhenUsernameIsEmpty() {
@@ -58,9 +66,12 @@ final class Challenge2Tests: XCTestCase {
             password: "123456"
         )
 
-        sut.login(loginCredentials: credentials) {
-            _ in
-        }
+        expect(
+            sut,
+            credentials: credentials,
+            toCompleteWith: failure(.invalidCredentials),
+            when: {}
+        )
 
         XCTAssertTrue(client.requests.isEmpty)
     }
@@ -74,78 +85,143 @@ final class Challenge2Tests: XCTestCase {
             password: ""
         )
 
-        sut.login(loginCredentials: credentials) {
-            _ in
-        }
+        expect(
+            sut,
+            credentials: credentials,
+            toCompleteWith: failure(.invalidCredentials),
+            when: {}
+        )
 
         XCTAssertTrue(client.requests.isEmpty)
     }
 
-    func test_login_forwardsCredentialsToClientOnEachCall() {
-        let url = URL(string: "https://a-given-url.com")!
-        let (sut, client) = makeSUT(url: url)
-
+    func test_login_deliversInvalidDataErrorOn200HTTPResponseWithInvalidJSON() {
+        let (sut, client) = makeSUT()
         let credentials = LoginCredentials(
             username: "Dimitra",
             password: "123456"
         )
 
-        let otherCredentials = LoginCredentials(
-            username: "Mary",
-            password: "012345"
+        expect(
+            sut,
+            credentials: credentials,
+            toCompleteWith: failure(.invalidData),
+            when: {
+                client.complete(
+                    withStatusCode: 200,
+                    data: Data("invalid json".utf8)
+                )
+            }
         )
-
-        sut.login(loginCredentials: credentials) {
-            _ in
-        }
-
-        sut.login(loginCredentials: otherCredentials) {
-            _ in
-        }
-
-        XCTAssertEqual(client.requests,
-                       [HTTPClientSpy.Request(url: url, credentials: credentials), HTTPClientSpy.Request(url: url, credentials: otherCredentials)])
     }
 
-    func test_login_loginErrorOnClientError() {
-        let (sut, client) = makeSUT()
-
-        var capturedErrors = [RemoteUserLogin.Error]()
-        sut.login(loginCredentials: LoginCredentials(username: "Dimitra", password: "123456")) {
-            capturedErrors.append($0)
-        }
-
-        let error = NSError(domain: "Test", code: 0)
-        client.complete(with: error)
-
-        XCTAssertEqual(capturedErrors, [.connectivity])
-    }
-
-    func test_login_deliversInvalidDataErrorOnNon200HTTPResponse() {
-        let (sut, client) = makeSUT()
-        
-        let samples = [199, 201, 300, 400, 500]
-
-        samples.enumerated().forEach { index, code in
-            var capturedErrors: [RemoteUserLogin.Error] = []
-            sut.login(loginCredentials: LoginCredentials(
+    func test_login_deliversInvalidDataErrorOnNon200HTTPResponse() throws {
+        let credentials = LoginCredentials(
                 username: "Dimitra",
                 password: "123456"
-            )) {
-                capturedErrors.append($0)
-            }
-            
-            client.complete(withStatusCode: code, at: index)
+            )
+            let user = makeUserJson(
+                id: UUID(),
+                credentials: credentials,
+                token: "a-token",
+                expirein: 3600
+            )
+            let data = try JSONSerialization.data(withJSONObject: user.json)
 
-            XCTAssertEqual(capturedErrors, [.invalidData])
+        for code in [199, 201, 300, 400, 500] {
+            let (sut, client) = makeSUT()
+            
+            expect(sut, credentials: credentials, toCompleteWith: failure(.invalidData), when: {
+                client.complete(withStatusCode: code, data: data)
+            })
         }
     }
 
-    private func makeSUT(url: URL = URL(string: "https://a-url.com")!) -> (sut: RemoteUserLogin, httpClient: HTTPClientSpy) {
+    func test_login_doesNotDeliverResultAfterSUTInstanceHasBeenDeallocated() {
+        let url = URL(string: "https://a-given-url.com")!
+        let client = HTTPClientSpy()
+        var sut: RemoteUserLogin? = RemoteUserLogin(client: client, url: url)
+
+        var captured = [RemoteUserLogin.Result?]()
+
+        sut?.login(
+                username: "Dimitra",
+                password: "123456"
+            )
+        {
+            captured.append($0)
+        }
+
+        sut = nil
+
+        client.complete(withStatusCode: 200, data: Data())
+
+        XCTAssertTrue(captured.isEmpty)
+    }
+
+    private func makeSUT(url: URL = URL(string: "https://a-url.com")!, file: StaticString = #file, line: UInt = #line) -> (sut: RemoteUserLogin, httpClient: HTTPClientSpy) {
         let client = HTTPClientSpy()
         let sut = RemoteUserLogin(client: client, url: url)
-
+        trackForMemoryLeaks(sut, file: file, line: line)
+        trackForMemoryLeaks(client, file: file, line: line)
         return (sut, client)
+    }
+
+    private func trackForMemoryLeaks(_ instance: AnyObject, file: StaticString = #file, line: UInt = #line) {
+        addTeardownBlock { [weak instance] in
+            XCTAssertNil(instance, "Instance should have been deallocated. Potential memory leak.", file: file, line: line)
+        }
+    }
+
+    private func makeUserJson(id: UUID, credentials: LoginCredentials, token: String, expirein: Int)-> (model: User, json: [String: Any]) {
+        let user = User(
+            id: id,
+            username: credentials.username,
+            token: token,
+            expiresIn: expirein
+        )
+
+        let json: [String: Any] = [
+            "id": user.id.uuidString,
+            "username": user.username,
+            "token": user.token,
+            "expiresIn": user.expiresIn
+        ]
+
+        return (user, json)
+    }
+
+    private func failure(_ error: RemoteUserLogin.Error) -> RemoteUserLogin.Result {
+        return .failure(error)
+    }
+
+    private func expect(
+        _ sut: RemoteUserLogin,
+        credentials: LoginCredentials,
+        toCompleteWith expectedResult: RemoteUserLogin.Result,
+        when action: () -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+
+        let exp = expectation(description: "Wait for load completion")
+
+        sut.login(username: credentials.username, password: credentials.password) { receivedResult in
+            switch (receivedResult, expectedResult) {
+                case let (.success(receivedUser), .success(expecteduser)):
+                    XCTAssertEqual(receivedUser, expecteduser, file: file, line: line)
+            case let (.failure(receivedError as RemoteUserLogin.Error), .failure(expectedError as RemoteUserLogin.Error)):
+                XCTAssertEqual(receivedError, expectedError, file: file, line: line)
+            default:
+                XCTFail("Expected \(expectedResult), but got \(receivedResult)", file: file, line: line)
+            }
+
+            exp.fulfill()
+        }
+
+        action()
+
+        wait(for: [exp], timeout: 1)
     }
 
     private final class HTTPClientSpy: HTTPClient {
@@ -180,7 +256,7 @@ final class Challenge2Tests: XCTestCase {
             messages[index].completion(.failure(error))
         }
 
-        func complete(withStatusCode code: Int, at index: Int = 0) {
+        func complete(withStatusCode code: Int, data: Data, at index: Int = 0) {
             let response = HTTPURLResponse(
                 url: messages[index].url,
                 statusCode: code,
@@ -188,7 +264,7 @@ final class Challenge2Tests: XCTestCase {
                 headerFields: nil
             )!
 
-            messages[index].completion(.success(response))
+            messages[index].completion(.success(data, response))
         }
     }
 }
