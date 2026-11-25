@@ -75,10 +75,28 @@ try {
     $statement->execute(['username' => $username]);
     $user = $statement->fetch();
 
-    if (
-        $user === false ||
-        !password_verify($password, $user['password_hash'])
-    ) {
+    if ($user === false) {
+        respond(401, ['error' => 'invalidCredentials']);
+    }
+
+    error_log(
+        'Password hash settings: ' .
+        json_encode(password_get_info($user['password_hash']))
+    );
+
+    $startedAt = microtime(true);
+
+    $passwordMatches = password_verify(
+        $password,
+        $user['password_hash']
+    );
+
+    error_log(
+        'Password verification seconds: ' .
+        (microtime(true) - $startedAt)
+    );
+
+    if (!$passwordMatches) {
         respond(401, ['error' => 'invalidCredentials']);
     }
 
