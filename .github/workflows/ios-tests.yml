@@ -1,4 +1,4 @@
-name: iOS Unit Tests
+name: iOS Tests
 
 on:
   push:
@@ -9,12 +9,13 @@ permissions:
 
 jobs:
   test:
-    name: Challenge2 Unit Tests
+    name: Unit and API End-to-End Tests
     runs-on: xcode-27
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      CHALLENGE2_DB_PASSWORD: 'Challenge2-Local-DB-123!'
 
     steps:
       - name: Checkout repository
@@ -23,7 +24,111 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Run unit tests
+      - name: Install PHP and MySQL
+        run: |
+          brew list --versions php || brew install php
+          brew list --versions mysql || brew install mysql
+          php --version
+          mysql --version
+
+      - name: Start MySQL
+        run: |
+          brew services start mysql
+
+          for attempt in {1..30}; do
+            if mysql -u root -e "SELECT 1" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "MySQL did not become ready."
+          exit 1
+
+      - name: Create test database
+        run: |
+          mysql -u root <<'SQL'
+          CREATE DATABASE IF NOT EXISTS challenge2
+              CHARACTER SET utf8mb4
+              COLLATE utf8mb4_unicode_ci;
+
+          CREATE TABLE IF NOT EXISTS challenge2.users (
+              id CHAR(36) PRIMARY KEY,
+              username VARCHAR(100) NOT NULL UNIQUE,
+              password_hash VARCHAR(255) NOT NULL
+          );
+
+          CREATE USER IF NOT EXISTS 'challenge2_api'@'localhost'
+              IDENTIFIED BY 'Challenge2-Local-DB-123!';
+
+          GRANT SELECT ON challenge2.users
+              TO 'challenge2_api'@'localhost';
+          SQL
+
+          MYSQL_SOCKET=$(mysql -u root -N -s -e "SELECT @@socket")
+          echo "CHALLENGE2_MYSQL_SOCKET=$MYSQL_SOCKET" >> "$GITHUB_ENV"
+
+          php -d "pdo_mysql.default_socket=$MYSQL_SOCKET" <<'PHP'
+          <?php
+          $database = new PDO(
+              'mysql:host=localhost;dbname=challenge2;charset=utf8mb4',
+              'root',
+              '',
+              [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+          );
+
+          $statement = $database->prepare(
+              'INSERT INTO users (id, username, password_hash)
+               VALUES (:id, :username, :password_hash)'
+          );
+
+          $statement->execute([
+              'id' => 'A12C047E-89F8-42AE-BDE1-60AF56BA9E25',
+              'username' => 'dimitra',
+              'password_hash' => password_hash(
+                  'Challenge2-Test-123!',
+                  PASSWORD_DEFAULT
+              ),
+          ]);
+          PHP
+
+      - name: Start PHP API
+        run: |
+          php -l backend/public/index.php
+
+          nohup php \
+            -d "pdo_mysql.default_socket=$CHALLENGE2_MYSQL_SOCKET" \
+            -S 127.0.0.1:8080 \
+            -t backend/public \
+            backend/public/index.php \
+            > "$RUNNER_TEMP/challenge2-api.log" 2>&1 &
+
+      - name: Verify API login
+        run: |
+          for attempt in {1..30}; do
+            if curl --silent --fail --max-time 3 \
+              http://127.0.0.1:8080/login \
+              -H 'Content-Type: application/json' \
+              --data '{"username":"dimitra","password":"Challenge2-Test-123!"}' \
+              -o "$RUNNER_TEMP/login-response.json"; then
+
+              jq -e '
+                .id == "A12C047E-89F8-42AE-BDE1-60AF56BA9E25"
+                and .username == "dimitra"
+                and .expiresIn == 3600
+                and (.token | type == "string" and length > 0)
+              ' "$RUNNER_TEMP/login-response.json"
+
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "API login did not become ready."
+          cat "$RUNNER_TEMP/challenge2-api.log"
+          exit 1
+
+      - name: Run tests
         run: |
           xcodebuild test \
             -project Challenge2.xcodeproj \
@@ -31,3 +136,10 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
             -only-testing:Challenge2Tests \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Show API logs on failure
+        if: failure()
+        run: |
+          if [ -f "$RUNNER_TEMP/challenge2-api.log" ]; then
+            cat "$RUNNER_TEMP/challenge2-api.log"
+          fi
