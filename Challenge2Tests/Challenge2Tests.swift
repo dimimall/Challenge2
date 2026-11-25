@@ -167,12 +167,6 @@ final class Challenge2Tests: XCTestCase {
         return (sut, client)
     }
 
-    private func trackForMemoryLeaks(_ instance: AnyObject, file: StaticString = #file, line: UInt = #line) {
-        addTeardownBlock { [weak instance] in
-            XCTAssertNil(instance, "Instance should have been deallocated. Potential memory leak.", file: file, line: line)
-        }
-    }
-
     private func makeUserJson(id: UUID, credentials: LoginCredentials, token: String, expirein: Int)-> (model: User, json: [String: Any]) {
         let user = User(
             id: id,
